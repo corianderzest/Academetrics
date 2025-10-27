@@ -1125,7 +1125,7 @@ class UploadFilesScreen(tk.Frame):
                     
                     try:
                         import matplotlib
-                        matplotlib.use('Agg') 
+                        matplotlib.use('Agg')  # Use non-interactive backend
                         import matplotlib.pyplot as plt
                     except ImportError as e:
                         missing_packages.append(f"matplotlib: {str(e)}")
@@ -1146,6 +1146,7 @@ class UploadFilesScreen(tk.Frame):
                         )
                         return
                     
+                    # Check for GPU
                     device = 'cpu'
                     try:
                         import torch
@@ -1161,11 +1162,14 @@ class UploadFilesScreen(tk.Frame):
                     status_label.config(text=f"Loading model ({device.upper()})...")
                     progress_window.update()
                     
+                    # Load model
                     model = None
                     tokenizer = None
                     is_transformer = False
                     
+                    # Check if it's a folder (likely transformer) or file
                     if os.path.isdir(self.model_path):
+                        # BERT/Transformer model
                         try:
                             from transformers import AutoModelForSequenceClassification, AutoTokenizer
                             
@@ -1191,6 +1195,7 @@ class UploadFilesScreen(tk.Frame):
                                 progress_window.update()
                                 
                                 try:
+                                    # Read config to determine model type
                                     config_path = os.path.join(self.model_path, 'config.json')
                                     if os.path.exists(config_path):
                                         with open(config_path, 'r') as f:
@@ -1201,6 +1206,7 @@ class UploadFilesScreen(tk.Frame):
                                         print(f"DEBUG: Model type from config: {model_type}")
                                         print(f"DEBUG: Architecture: {architecture}")
                                         
+                                        # Map to standard Hugging Face model names
                                         model_name_map = {
                                             'bert': 'bert-base-uncased',
                                             'roberta': 'roberta-base',
@@ -1218,10 +1224,12 @@ class UploadFilesScreen(tk.Frame):
                                             else:
                                                 base_model_name = 'bert-base-uncased'
                                         else:
+                                            # Fallback to model_type
                                             base_model_name = model_name_map.get(model_type, 'bert-base-uncased')
                                         
                                         print(f"DEBUG: Trying to download tokenizer for: {base_model_name}")
 
+                                        # Download and save tokenizer
                                         tokenizer = AutoTokenizer.from_pretrained(base_model_name)
                                         tokenizer.save_pretrained(self.model_path)
                                         print("DEBUG: Tokenizer downloaded and saved to model folder")
@@ -1327,6 +1335,12 @@ class UploadFilesScreen(tk.Frame):
                     if is_transformer:
                         # SHAP for transformers
                         import torch
+                        import gc
+                        
+                        # Clear memory
+                        gc.collect()
+                        if device == 'cuda':
+                            torch.cuda.empty_cache()
                         
                         # Find text column
                         text_column = None
@@ -1354,32 +1368,123 @@ class UploadFilesScreen(tk.Frame):
                         
                         texts = X_subset[text_column].tolist()
                         
+                        # Limit number of samples for SHAP (transformers are memory-intensive)
+                        max_samples = min(5, len(texts))
+                        texts = texts[:max_samples]
+                        
+                        status_label.config(text=f"Computing SHAP for {max_samples} samples (this may take several minutes)...")
+                        progress_window.update()
+                        
                         def predict_fn(text_list):
+                            """Prediction function for SHAP"""
+                            # Handle both single strings and lists
+                            if isinstance(text_list, str):
+                                text_list = [text_list]
+                            
                             inputs = tokenizer(
                                 text_list, 
                                 return_tensors="pt", 
                                 padding=True, 
                                 truncation=True, 
-                                max_length=512
+                                max_length=128  # Reduced for speed
                             )
                             if device == 'cuda':
                                 inputs = {k: v.to(device) for k, v in inputs.items()}
+                            
                             with torch.no_grad():
                                 outputs = model(**inputs)
-                            return torch.softmax(outputs.logits, dim=1).cpu().numpy()
+                            
+                            probs = torch.softmax(outputs.logits, dim=1).cpu().numpy()
+                            return probs
                         
-                        # Use PartitionExplainer for transformers (faster than full)
                         try:
-                            explainer = shap.Explainer(predict_fn, tokenizer)
-                            shap_values = explainer(texts[:min(10, len(texts))])  # Limit for speed
-                            feature_names = texts
+                            # Method 1: Try using Pipeline explainer (most compatible)
+                            try:
+                                from transformers import pipeline
+                                
+                                status_label.config(text="Using pipeline-based explainer...")
+                                progress_window.update()
+                                
+                                # Create a pipeline
+                                pipe = pipeline(
+                                    "text-classification",
+                                    model=model,
+                                    tokenizer=tokenizer,
+                                    device=0 if device == 'cuda' else -1,
+                                    return_all_scores=True
+                                )
+                                
+                                # Create explainer using the pipeline
+                                explainer = shap.Explainer(pipe)
+                                
+                                # Compute SHAP values - pass as list of strings
+                                shap_values = explainer(texts)
+                                feature_names = texts
+                                
+                            except Exception as pipeline_error:
+                                print(f"Pipeline method failed: {pipeline_error}")
+                                
+                                # Method 2: Manual tokenization approach
+                                status_label.config(text="Using manual tokenization approach...")
+                                progress_window.update()
+                                
+                                def f(x):
+                                    """Wrapper that handles tokenization internally"""
+                                    # x will be a numpy array of strings
+                                    if isinstance(x, np.ndarray):
+                                        text_list = x.tolist()
+                                    elif isinstance(x, list):
+                                        text_list = x
+                                    else:
+                                        text_list = [str(x)]
+                                    
+                                    # Tokenize
+                                    inputs = tokenizer(
+                                        text_list,
+                                        return_tensors="pt",
+                                        padding=True,
+                                        truncation=True,
+                                        max_length=128
+                                    )
+                                    
+                                    if device == 'cuda':
+                                        inputs = {k: v.to(device) for k, v in inputs.items()}
+                                    
+                                    # Get predictions
+                                    with torch.no_grad():
+                                        outputs = model(**inputs)
+                                    
+                                    return torch.softmax(outputs.logits, dim=1).cpu().numpy()
+                                
+                                # Convert texts to numpy array
+                                texts_array = np.array(texts)
+                                
+                                # Use KernelExplainer with string data
+                                background_data = texts_array[:min(2, len(texts_array))]
+                                explainer = shap.KernelExplainer(f, background_data)
+                                
+                                # Explain
+                                shap_values = explainer.shap_values(texts_array)
+                                
+                                # Handle multi-class output
+                                if isinstance(shap_values, list):
+                                    shap_values = shap_values[1] if len(shap_values) == 2 else shap_values[0]
+                                
+                                feature_names = texts
+                            
                         except Exception as e:
                             progress_window.destroy()
+                            import traceback
+                            error_trace = traceback.format_exc()
                             messagebox.showerror(
                                 "SHAP Error",
                                 f"SHAP analysis failed for transformer model:\n\n{str(e)}\n\n"
-                                "Note: Transformer SHAP analysis can be memory-intensive.\n"
-                                "Try with fewer rows (1-5) for best results."
+                                "Tips:\n"
+                                "- Transformer SHAP is very memory-intensive\n"
+                                "- Try with just 1-2 rows\n"
+                                "- Ensure your GPU has enough memory\n"
+                                "- Or use CPU mode (slower but more stable)\n\n"
+                                f"Full error:\n{error_trace[:500]}"
                             )
                             return
                         
@@ -1500,7 +1605,7 @@ class UploadFilesScreen(tk.Frame):
             messagebox.showerror("Error", 
                 f"Failed to start:\n\n{str(e)}\n\n"
                 f"Details:\n{error_details[:800]}")
-            
+               
     def _show_shap_results(self, start_idx, end_idx, plot_path1, plot_path2, device):
         """Display SHAP interpretation results"""
         self.showing_shap_results = True
