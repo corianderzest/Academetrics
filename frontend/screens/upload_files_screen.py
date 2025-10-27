@@ -469,15 +469,12 @@ class UploadFilesScreen(tk.Frame):
             return
         
         try:
-            # Check if it's a folder or file
             is_folder = os.path.isdir(self.model_path)
             
             if is_folder:
-                # Handle model folder (BERT, etc.)
                 folder_name = os.path.basename(self.model_path)
                 files_in_folder = os.listdir(self.model_path)
                 
-                # Calculate total folder size
                 total_size = 0
                 for dirpath, dirnames, filenames in os.walk(self.model_path):
                     for filename in filenames:
@@ -486,11 +483,13 @@ class UploadFilesScreen(tk.Frame):
                 
                 folder_size_mb = total_size / (1024 * 1024)
                 
-                # Detect model type based on files
                 model_type = "Unknown Model"
                 model_details = {}
                 
-                # Check for BERT/Transformer models
+                config_exists = 'config.json' in files_in_folder
+                has_tokenizer_files = any(f.startswith('tokenizer') or f in ['vocab.txt', 'vocab.json', 'tokenizer.json'] for f in files_in_folder)
+                has_model_weights = any(f.endswith(('.bin', '.safetensors', '.h5', '.pt', '.pth')) for f in files_in_folder)
+
                 if 'config.json' in files_in_folder:
                     model_type = "Transformer Model (BERT/RoBERTa/etc.)"
                     try:
@@ -506,35 +505,69 @@ class UploadFilesScreen(tk.Frame):
                             'vocab_size': config.get('vocab_size', 'N/A'),
                             'max_position_embeddings': config.get('max_position_embeddings', 'N/A')
                         }
+
                     except Exception as e:
-                        model_details['error'] = f"Could not read config: {str(e)}"
+                        model_details['config_error'] = f"Could not read config: {str(e)}"
                 
-                # Check for model weight files
-                weight_files = []
-                if any('.bin' in f for f in files_in_folder):
-                    weight_files.append('.bin files')
-                if any('.safetensors' in f for f in files_in_folder):
-                    weight_files.append('.safetensors files')
-                if any('.h5' in f for f in files_in_folder):
-                    weight_files.append('.h5 files')
+
+                readiness = []
+                if config_exists:
+                    readiness.append("✓ config.json")
+                else:
+                    readiness.append("✗ config.json (MISSING)")
+                    
+                if has_tokenizer_files:
+                    readiness.append("✓ tokenizer files")
+                else:
+                    readiness.append("✗ tokenizer files (MISSING)")
+                    
+                if has_model_weights:
+                    readiness.append("✓ model weights")
+                else:
+                    readiness.append("✗ model weights (MISSING)")
                 
-                if weight_files:
-                    model_details['weight_format'] = ', '.join(weight_files)
-                
-                # List important files
+                model_details['readiness'] = " | ".join(readiness)
+
                 important_files = [f for f in files_in_folder if f.endswith(
-                    ('.json', '.bin', '.safetensors', '.txt', '.h5')
-                )]
-                
-                # Store model info
+                ('.json', '.bin', '.safetensors', '.txt', '.h5', '.pt', '.pth', '.model')
+                ) or f.startswith('tokenizer') or f in ['vocab.txt', 'config.json']]
+
                 self.model_info = {
-                    'filename': folder_name,
-                    'type': model_type,
-                    'size_mb': round(folder_size_mb, 2),
-                    'is_folder': True,
-                    'details': model_details,
-                    'files': important_files
+                'filename': folder_name,
+                'type': model_type,
+                'size_mb': round(folder_size_mb, 2),
+                'is_folder': True,
+                'details': model_details,
+                'files': important_files,
+                'is_ready': config_exists and has_tokenizer_files and has_model_weights
                 }
+
+                # # Check for model weight files
+                # weight_files = []
+                # if any('.bin' in f for f in files_in_folder):
+                #     weight_files.append('.bin files')
+                # if any('.safetensors' in f for f in files_in_folder):
+                #     weight_files.append('.safetensors files')
+                # if any('.h5' in f for f in files_in_folder):
+                #     weight_files.append('.h5 files')
+                
+                # if weight_files:
+                #     model_details['weight_format'] = ', '.join(weight_files)
+                
+                # # List important files
+                # important_files = [f for f in files_in_folder if f.endswith(
+                #     ('.json', '.bin', '.safetensors', '.txt', '.h5')
+                # )]
+                
+                # # Store model info
+                # self.model_info = {
+                #     'filename': folder_name,
+                #     'type': model_type,
+                #     'size_mb': round(folder_size_mb, 2),
+                #     'is_folder': True,
+                #     'details': model_details,
+                #     'files': important_files
+                # }
                 
             else:
                 # Handle single model file
@@ -731,6 +764,21 @@ class UploadFilesScreen(tk.Frame):
             anchor="w"
         )
         size_label.pack(fill=tk.X, padx=20, pady=(0, 5))
+
+        if self.model_info.get('is_folder', False):
+            readiness = self.model_info.get('is_ready', False)
+            status_color = "#4A7C59" if readiness else "#A15264"
+            status_text = "✓ READY FOR SHAP" if readiness else "✗ MISSING FILES"
+            
+            status_label = tk.Label(
+                main_card,
+                text=status_text,
+                font=("Arial", 12, "bold"),
+                bg="white",
+                fg=status_color,
+                anchor="w"
+            )
+            status_label.pack(fill=tk.X, padx=20, pady=(0, 10))
         
         if info['is_folder']:
             files_count = len(info.get('files', []))
@@ -1061,6 +1109,7 @@ class UploadFilesScreen(tk.Frame):
             def run_interpretation():
                 try:
                     # Test imports
+                    import json
                     import sys
                     missing_packages = []
                     
@@ -1076,7 +1125,7 @@ class UploadFilesScreen(tk.Frame):
                     
                     try:
                         import matplotlib
-                        matplotlib.use('Agg')  # Use non-interactive backend
+                        matplotlib.use('Agg') 
                         import matplotlib.pyplot as plt
                     except ImportError as e:
                         missing_packages.append(f"matplotlib: {str(e)}")
@@ -1097,7 +1146,6 @@ class UploadFilesScreen(tk.Frame):
                         )
                         return
                     
-                    # Check for GPU
                     device = 'cpu'
                     try:
                         import torch
@@ -1113,44 +1161,104 @@ class UploadFilesScreen(tk.Frame):
                     status_label.config(text=f"Loading model ({device.upper()})...")
                     progress_window.update()
                     
-                    # Load model
                     model = None
                     tokenizer = None
                     is_transformer = False
                     
-                    # Check if it's a folder (likely transformer) or file
                     if os.path.isdir(self.model_path):
-                        # BERT/Transformer model
                         try:
                             from transformers import AutoModelForSequenceClassification, AutoTokenizer
                             
                             status_label.config(text="Loading BERT/Transformer model...")
                             progress_window.update()
+
+                            print(f"DEBUG: Loading BERT model from: {self.model_path}")
+                            print(f"DEBUG: Files in directory: {os.listdir(self.model_path)}")
                             
-                            # Check if required files exist
-                            config_path = os.path.join(self.model_path, 'config.json')
-                            if not os.path.exists(config_path):
-                                raise FileNotFoundError(f"config.json not found in {self.model_path}")
+                            # Initialize tokenizer
+                            tokenizer = None
                             
-                            # Load tokenizer - this is where the error was occurring
+                            # First try to load tokenizer from local folder
                             try:
-                                tokenizer = AutoTokenizer.from_pretrained(
-                                    self.model_path,
-                                    local_files_only=True
-                                )
-                            except Exception as e:
-                                # Fallback: try without local_files_only
                                 tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-                            
-                            # Load model
-                            try:
-                                model = AutoModelForSequenceClassification.from_pretrained(
-                                    self.model_path,
-                                    local_files_only=True
-                                )
+                                print("DEBUG: Tokenizer loaded successfully from local folder")
                             except Exception as e:
-                                # Fallback: try without local_files_only
+                                print(f"DEBUG: Local tokenizer loading failed: {e}")
+                            
+                            # If tokenizer is still None, download it
+                            if tokenizer is None:
+                                status_label.config(text="Tokenizer missing, downloading...")
+                                progress_window.update()
+                                
+                                try:
+                                    config_path = os.path.join(self.model_path, 'config.json')
+                                    if os.path.exists(config_path):
+                                        with open(config_path, 'r') as f:
+                                            config = json.load(f)
+                                        
+                                        model_type = config.get('model_type', '')
+                                        architecture = config.get('architectures', [''])[0] if config.get('architectures') else ''
+                                        print(f"DEBUG: Model type from config: {model_type}")
+                                        print(f"DEBUG: Architecture: {architecture}")
+                                        
+                                        model_name_map = {
+                                            'bert': 'bert-base-uncased',
+                                            'roberta': 'roberta-base',
+                                            'distilbert': 'distilbert-base-uncased',
+                                            'albert': 'albert-base-v2'
+                                        }
+                                        
+                                        base_model_name = None
+
+                                        if 'bert' in architecture.lower():
+                                            if 'distil' in architecture.lower():
+                                                base_model_name = 'distilbert-base-uncased'
+                                            elif 'roberta' in architecture.lower():
+                                                base_model_name = 'roberta-base'
+                                            else:
+                                                base_model_name = 'bert-base-uncased'
+                                        else:
+                                            base_model_name = model_name_map.get(model_type, 'bert-base-uncased')
+                                        
+                                        print(f"DEBUG: Trying to download tokenizer for: {base_model_name}")
+
+                                        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+                                        tokenizer.save_pretrained(self.model_path)
+                                        print("DEBUG: Tokenizer downloaded and saved to model folder")
+                                        print(f"DEBUG: New files in directory: {os.listdir(self.model_path)}")
+                                        
+                                    else:
+                                        raise Exception("config.json not found in model folder")
+                                        
+                                except Exception as download_error:
+                                    progress_window.destroy()
+                                    messagebox.showerror(
+                                        "Tokenizer Error",
+                                        f"Failed to download tokenizer:\n\n{str(download_error)}\n\n"
+                                        "Please ensure:\n"
+                                        "1. You have internet connection\n"
+                                        "2. Your model folder is writable\n"
+                                        "3. config.json exists in your model folder\n\n"
+                                        f"Current files: {os.listdir(self.model_path)}"
+                                    )
+                                    return
+                            
+                            # Now load the model
+                            try:
                                 model = AutoModelForSequenceClassification.from_pretrained(self.model_path)
+                                print("DEBUG: Model loaded successfully")
+                            except Exception as e:
+                                progress_window.destroy()
+                                messagebox.showerror(
+                                    "Model Loading Error", 
+                                    f"Failed to load model:\n{str(e)}\n\n"
+                                    "This might be due to:\n"
+                                    "1. Model architecture mismatch\n"
+                                    "2. Corrupted model files\n"
+                                    "3. Missing dependencies\n\n"
+                                    f"Files found: {os.listdir(self.model_path)}"
+                                )
+                                return
                             
                             if device == 'cuda':
                                 import torch
@@ -1171,10 +1279,8 @@ class UploadFilesScreen(tk.Frame):
                             messagebox.showerror(
                                 "Model Loading Error",
                                 f"Failed to load transformer model:\n\n{str(e)}\n\n"
-                                "Make sure the folder contains:\n"
-                                "- config.json\n"
-                                "- tokenizer files (tokenizer.json or vocab.txt)\n"
-                                "- model weights (pytorch_model.bin or model.safetensors)"
+                                f"Path: {self.model_path}\n"
+                                f"Files: {os.listdir(self.model_path) if os.path.exists(self.model_path) else 'PATH_NOT_FOUND'}"
                             )
                             return
                     
@@ -1394,7 +1500,7 @@ class UploadFilesScreen(tk.Frame):
             messagebox.showerror("Error", 
                 f"Failed to start:\n\n{str(e)}\n\n"
                 f"Details:\n{error_details[:800]}")
-    
+            
     def _show_shap_results(self, start_idx, end_idx, plot_path1, plot_path2, device):
         """Display SHAP interpretation results"""
         self.showing_shap_results = True
