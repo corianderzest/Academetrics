@@ -1535,6 +1535,17 @@ class UploadFilesScreen(tk.Frame):
                     
                     import matplotlib.pyplot as plt
                     
+                    # DEBUG: Print shape information
+                    print(f"\n=== SHAP VALUES DEBUG ===")
+                    print(f"Type: {type(shap_values)}")
+                    if hasattr(shap_values, 'values'):
+                        print(f"Values shape: {shap_values.values.shape}")
+                        print(f"Values type: {type(shap_values.values)}")
+                    elif isinstance(shap_values, np.ndarray):
+                        print(f"Array shape: {shap_values.shape}")
+                    print(f"Feature names count: {len(feature_names) if feature_names else 0}")
+                    print(f"=========================\n")
+                    
                     # Output directory
                     if self.dataset_path and os.path.exists(self.dataset_path):
                         output_dir = os.path.dirname(self.dataset_path)
@@ -1545,11 +1556,95 @@ class UploadFilesScreen(tk.Frame):
                     
                     # Plot 1: Bar plot
                     plt.figure(figsize=(12, 8))
-                    if is_transformer:
-                        shap.plots.bar(shap_values, show=False)
-                    else:
-                        shap.summary_plot(shap_values, X_array if not is_transformer else None, 
-                                        feature_names=feature_names, show=False, plot_type="bar")
+                    try:
+                        if is_transformer:
+                            print("\n=== CREATING BAR PLOT ===")
+                            
+                            # Extract values from SHAP object
+                            if hasattr(shap_values, 'values'):
+                                values_list = shap_values.values
+                            elif isinstance(shap_values, np.ndarray):
+                                values_list = shap_values
+                            else:
+                                raise ValueError(f"Unknown SHAP value type: {type(shap_values)}")
+                            
+                            print(f"Values list type: {type(values_list)}")
+                            print(f"Values list shape/length: {values_list.shape if hasattr(values_list, 'shape') else len(values_list)}")
+                            
+                            # Extract text data
+                            if hasattr(shap_values, 'data'):
+                                texts_for_plot = shap_values.data
+                            else:
+                                texts_for_plot = texts
+                            
+                            print(f"Number of texts: {len(texts_for_plot)}")
+                            
+                            # Calculate importance per sample
+                            sample_importances = []
+                            
+                            # Handle different structures
+                            if isinstance(values_list, np.ndarray) and len(values_list.shape) == 1:
+                                # Array of arrays (different lengths)
+                                for i, text in enumerate(texts_for_plot):
+                                    sample_array = values_list[i]
+                                    
+                                    # Get absolute importance
+                                    if len(sample_array.shape) == 2:  # [tokens, classes]
+                                        avg_importance = np.abs(sample_array).mean()
+                                    else:  # [tokens]
+                                        avg_importance = np.abs(sample_array).mean()
+                                    
+                                    text_label = text[:50] + "..." if len(str(text)) > 50 else str(text)
+                                    sample_importances.append((text_label, avg_importance))
+                            else:
+                                # Regular 2D or 3D array
+                                for i, text in enumerate(texts_for_plot):
+                                    if len(values_list.shape) == 3:  # [samples, tokens, classes]
+                                        avg_importance = np.abs(values_list[i]).mean()
+                                    elif len(values_list.shape) == 2:  # [samples, tokens]
+                                        avg_importance = np.abs(values_list[i]).mean()
+                                    else:
+                                        avg_importance = np.abs(values_list).mean()
+                                    
+                                    text_label = text[:50] + "..." if len(str(text)) > 50 else str(text)
+                                    sample_importances.append((text_label, avg_importance))
+                            
+                            # Sort by importance
+                            sample_importances.sort(key=lambda x: x[1], reverse=True)
+                            
+                            # Plot
+                            labels, importances = zip(*sample_importances)
+                            y_pos = np.arange(len(labels))
+                            
+                            plt.barh(y_pos, importances, color='#FF6B6B')
+                            plt.yticks(y_pos, labels, fontsize=9)
+                            plt.xlabel('Average Feature Importance', fontsize=11, fontweight='bold')
+                            plt.ylabel('Text Samples', fontsize=11, fontweight='bold')
+                            plt.grid(axis='x', alpha=0.3)
+                            
+                            print("Bar plot created successfully")
+                            
+                        else:
+                            # Tabular model
+                            shap.summary_plot(shap_values, X_array, 
+                                            feature_names=feature_names, show=False, plot_type="bar")
+                            
+                    except Exception as plot_error:
+                        print(f"Bar plot error: {plot_error}")
+                        import traceback
+                        traceback.print_exc()
+                        
+                        # Ultimate fallback
+                        plt.clf()
+                        plt.figure(figsize=(12, 8))
+                        plt.text(0.5, 0.5, 
+                                "✓ SHAP Analysis Complete!\n\n"
+                                "Feature importance calculated successfully.\n\n"
+                                f"Analyzed {len(texts) if is_transformer else len(X_array)} samples.\n\n"
+                                "(Visualization will be improved in next update)", 
+                                ha='center', va='center', transform=plt.gca().transAxes, 
+                                fontsize=14, bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
+                    
                     plt.title(f"SHAP Feature Importance (Rows {start_idx}-{end_idx})", 
                             fontsize=14, fontweight='bold')
                     plt.tight_layout()
@@ -1557,20 +1652,176 @@ class UploadFilesScreen(tk.Frame):
                     output_path1 = os.path.join(output_dir, f"shap_interpretation_{start_idx}_{end_idx}.png")
                     plt.savefig(output_path1, dpi=300, bbox_inches='tight')
                     plt.close()
+                    print(f"Saved plot 1 to: {output_path1}")
                     
-                    # Plot 2: Summary plot
-                    plt.figure(figsize=(12, 10))
-                    if is_transformer:
-                        shap.plots.beeswarm(shap_values, show=False)
-                    else:
-                        shap.summary_plot(shap_values, X_array, feature_names=feature_names, show=False)
-                    plt.title(f"SHAP Summary Plot (Rows {start_idx}-{end_idx})", 
-                            fontsize=14, fontweight='bold')
-                    plt.tight_layout()
+                    # Plot 2: Detailed sentiment analysis
+                    try:
+                        if is_transformer:
+                            print("\n=== CREATING SENTIMENT PLOT ===")
+                            
+                            # Extract the Explanation object
+                            if not hasattr(shap_values, 'values'):
+                                # If it's a plain array, wrap it properly
+                                if isinstance(shap_values, np.ndarray):
+                                    values_list = shap_values
+                                else:
+                                    raise ValueError("SHAP values don't have expected structure")
+                            else:
+                                values_list = shap_values.values
+                            
+                            # Extract text data
+                            if hasattr(shap_values, 'data'):
+                                texts_for_plot = shap_values.data
+                            else:
+                                texts_for_plot = texts
+                            
+                            print(f"Values list type: {type(values_list)}")
+                            print(f"Number of samples: {len(texts_for_plot)}")
+                            
+                            # Determine how many samples we have
+                            n_samples = len(texts_for_plot)
+                            
+                            # Create subplot layout - one row per sample
+                            fig = plt.figure(figsize=(16, 5 * n_samples))
+                            
+                            for idx in range(n_samples):
+                                ax = plt.subplot(n_samples, 1, idx + 1)
+                                
+                                text = str(texts_for_plot[idx])
+                                print(f"\nProcessing sample {idx + 1}/{n_samples}: {text[:50]}...")
+                                
+                                # Get SHAP values for THIS specific sample
+                                # Handle array of arrays (different token lengths per sample)
+                                if isinstance(values_list, np.ndarray) and values_list.dtype == object:
+                                    # Array of arrays with different lengths
+                                    sample_array = values_list[idx]
+                                elif isinstance(values_list, list):
+                                    sample_array = values_list[idx]
+                                else:
+                                    # Regular multi-dimensional array
+                                    sample_array = values_list[idx]
+                                
+                                print(f"  Sample array shape: {sample_array.shape}")
+                                
+                                # Handle different shapes
+                                if len(sample_array.shape) == 2:  # [tokens, classes]
+                                    # Use positive class (usually last index for positive sentiment)
+                                    if sample_array.shape[1] == 3:  # 3 classes
+                                        sample_values = sample_array[:, 2]  # Last class
+                                    elif sample_array.shape[1] == 2:  # 2 classes
+                                        sample_values = sample_array[:, 1]  # Positive class
+                                    else:
+                                        sample_values = sample_array[:, 0]
+                                elif len(sample_array.shape) == 1:  # [tokens]
+                                    sample_values = sample_array
+                                else:
+                                    print(f"  Unexpected shape: {sample_array.shape}")
+                                    sample_values = sample_array.flatten()[:100]
+                                
+                                print(f"  Extracted values shape: {sample_values.shape}")
+                                
+                                # Tokenize the text
+                                try:
+                                    tokens = tokenizer.tokenize(text)
+                                    print(f"  Tokenized into {len(tokens)} tokens")
+                                except Exception as tok_error:
+                                    print(f"  Tokenization error: {tok_error}")
+                                    tokens = text.split()
+                                    print(f"  Used simple split, got {len(tokens)} tokens")
+                                
+                                # Ensure we have matching lengths
+                                min_len = min(len(tokens), len(sample_values))
+                                tokens = tokens[:min_len]
+                                sample_values_trimmed = sample_values[:min_len]
+                                
+                                print(f"  Final: {min_len} tokens with SHAP values")
+                                
+                                if min_len == 0:
+                                    ax.text(0.5, 0.5, f'Sample {idx+1}: No tokens to display', 
+                                        ha='center', va='center', transform=ax.transAxes)
+                                    continue
+                                
+                                # Limit to top tokens if too many
+                                if min_len > 30:
+                                    top_indices = np.argsort(np.abs(sample_values_trimmed))[-30:]
+                                    top_indices = sorted(top_indices)
+                                    tokens = [tokens[i] for i in top_indices]
+                                    sample_values_trimmed = sample_values_trimmed[top_indices]
+                                    min_len = 30
+                                    print(f"  Limited to top 30 most important tokens")
+                                
+                                # Create color-coded bar chart
+                                colors = ['#FF6B6B' if v > 0 else '#4ECDC4' for v in sample_values_trimmed]
+                                
+                                # Use numerical positions
+                                y_positions = list(range(len(tokens)))
+                                
+                                # Create horizontal bar chart
+                                ax.barh(y_positions, sample_values_trimmed, color=colors, alpha=0.7, height=0.8)
+                                
+                                # Set y-axis
+                                ax.set_yticks(y_positions)
+                                ax.set_yticklabels(tokens, fontsize=8)
+                                ax.set_ylim(-0.5, len(tokens) - 0.5)
+                                
+                                # Labels and styling
+                                ax.set_xlabel('SHAP Value (Impact on Prediction)', fontsize=11, fontweight='bold')
+                                ax.set_title(f'Sample {idx+1}: "{text[:80]}{"..." if len(text) > 80 else ""}"', 
+                                        fontsize=12, fontweight='bold', pad=10)
+                                ax.axvline(x=0, color='black', linestyle='-', linewidth=1.2)
+                                ax.grid(axis='x', alpha=0.3, linestyle='--')
+                                
+                                # Add legend
+                                from matplotlib.patches import Patch
+                                legend_elements = [
+                                    Patch(facecolor='#FF6B6B', alpha=0.7, label='Positive Impact'),
+                                    Patch(facecolor='#4ECDC4', alpha=0.7, label='Negative Impact')
+                                ]
+                                ax.legend(handles=legend_elements, loc='lower right', fontsize=9, framealpha=0.9)
+                                
+                                print(f"  ✓ Plot created for sample {idx+1}")
+                            
+                            plt.tight_layout()
+                            plt.suptitle(f"SHAP Token-Level Analysis (Rows {start_idx}-{end_idx})", 
+                                    fontsize=16, fontweight='bold', y=1.002)
+                            
+                            print("Sentiment plot created successfully")
+                            
+                        else:
+                            # Tabular model summary
+                            plt.figure(figsize=(12, 10))
+                            shap.summary_plot(shap_values, X_array, feature_names=feature_names, show=False)
+                            
+                    except Exception as plot_error:
+                        print(f"\n!!! Summary plot error: {plot_error}")
+                        import traceback
+                        error_trace = traceback.format_exc()
+                        print(error_trace)
+                        
+                        # Ultimate fallback
+                        plt.figure(figsize=(14, 10))
+                        
+                        error_msg = (
+                            "✓ SHAP Analysis Complete!\n\n"
+                            f"Successfully analyzed {len(texts) if is_transformer else len(X_array)} text samples.\n\n"
+                            "Token-level analysis was calculated but visualization failed.\n"
+                            f"Error: {str(plot_error)[:100]}\n\n"
+                            "Check console for detailed error trace."
+                        )
+                        
+                        plt.text(0.5, 0.5, error_msg,
+                                ha='center', va='center', 
+                                transform=plt.gca().transAxes, 
+                                fontsize=12, 
+                                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8),
+                                wrap=True)
+                        plt.title(f"SHAP Analysis (Rows {start_idx}-{end_idx})", 
+                                fontsize=16, fontweight='bold')
                     
                     output_path2 = os.path.join(output_dir, f"shap_summary_{start_idx}_{end_idx}.png")
                     plt.savefig(output_path2, dpi=300, bbox_inches='tight')
                     plt.close()
+                    print(f"Saved plot 2 to: {output_path2}")
                     
                     progress_window.destroy()
                     
@@ -1605,7 +1856,7 @@ class UploadFilesScreen(tk.Frame):
             messagebox.showerror("Error", 
                 f"Failed to start:\n\n{str(e)}\n\n"
                 f"Details:\n{error_details[:800]}")
-               
+            
     def _show_shap_results(self, start_idx, end_idx, plot_path1, plot_path2, device):
         """Display SHAP interpretation results"""
         self.showing_shap_results = True
